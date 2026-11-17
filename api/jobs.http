@@ -1,0 +1,105 @@
+### SmartHire job-service samples.
+### Run with the VS Code "REST Client" extension or JetBrains HTTP Client.
+### Requests are ordered: run them top to bottom. Responses feed later requests.
+
+@jobs = http://localhost:8081/api/v1
+
+### Health
+GET http://localhost:8081/readyz
+
+### 1. Create a draft job (requirements inline, no stages yet)
+# @name createJob
+POST {{jobs}}/jobs
+Content-Type: application/json
+X-User-ID: recruiter-alice
+
+{
+  "recruiter_id": "0193a000-0000-7000-8000-000000000001",
+  "title": "Senior Go Engineer",
+  "description": "Build scalable recruitment workflows in Go with Postgres, Kafka and Temporal.",
+  "department": "Engineering",
+  "location": "Islamabad",
+  "employment_type": "full_time",
+  "work_mode": "hybrid",
+  "experience_min": 4,
+  "experience_max": 8,
+  "salary_min": 300000,
+  "salary_max": 500000,
+  "currency": "PKR",
+  "requirements": [
+    { "type": "skill", "value": "Go" },
+    { "type": "skill", "value": "PostgreSQL" },
+    { "type": "qualification", "value": "BS Computer Science", "is_mandatory": false }
+  ]
+}
+
+@jobId = {{createJob.response.body.id}}
+
+### 2. Try to publish -> 422 (no hiring stages yet)
+POST {{jobs}}/jobs/{{jobId}}/publish
+X-User-ID: recruiter-alice
+
+### 3. Configure hiring stages (replaces the whole pipeline)
+# @name setStages
+PUT {{jobs}}/jobs/{{jobId}}/stages
+Content-Type: application/json
+X-User-ID: recruiter-alice
+
+{
+  "stages": [
+    { "name": "CV Screening",   "stage_type": "screening",  "position": 1 },
+    { "name": "Coding Test",    "stage_type": "assessment", "position": 2 },
+    { "name": "Tech Interview", "stage_type": "interview",  "position": 3 },
+    { "name": "Offer",          "stage_type": "offer",      "position": 4 }
+  ]
+}
+
+### 4. Replace requirements
+PUT {{jobs}}/jobs/{{jobId}}/requirements
+Content-Type: application/json
+X-User-ID: recruiter-alice
+
+{
+  "requirements": [
+    { "type": "skill", "value": "Go" },
+    { "type": "skill", "value": "Kafka", "is_mandatory": false },
+    { "type": "experience", "value": "4+ years backend" }
+  ]
+}
+
+### 5. Partial update. "version" must match the current version, else 409.
+GET {{jobs}}/jobs/{{jobId}}
+
+###
+PATCH {{jobs}}/jobs/{{jobId}}
+Content-Type: application/json
+X-User-ID: recruiter-alice
+
+{
+  "version": 3,
+  "title": "Staff Go Engineer"
+}
+
+### 6. Publish -> 200, status=published
+POST {{jobs}}/jobs/{{jobId}}/publish
+X-User-ID: recruiter-alice
+
+### 7. Browse published jobs (candidate view)
+GET {{jobs}}/jobs?status=published&q=go&location=islamabad&limit=10&offset=0
+
+### 8. Audit trail
+GET {{jobs}}/jobs/{{jobId}}/audit
+
+### 9. Close, then archive
+POST {{jobs}}/jobs/{{jobId}}/close
+X-User-ID: recruiter-alice
+
+###
+POST {{jobs}}/jobs/{{jobId}}/archive
+X-User-ID: recruiter-alice
+
+### 10. Validation error example -> 400 with per-field details
+POST {{jobs}}/jobs
+Content-Type: application/json
+
+{ "title": "x", "employment_type": "gig" }

@@ -1,0 +1,87 @@
+### SmartHire candidate-service samples (VS Code REST Client / JetBrains HTTP Client).
+
+@cands = http://localhost:8082/api/v1
+
+### Health
+GET http://localhost:8082/readyz
+
+### 1. Register a candidate
+# @name register
+POST {{cands}}/candidates
+Content-Type: application/json
+X-User-ID: candidate-self
+
+{
+  "email": "ada@example.com",
+  "full_name": "Ada Lovelace",
+  "phone": "+923001234567",
+  "location": "Lahore",
+  "headline": "Backend Engineer, Go & Postgres",
+  "summary": "5 years building distributed systems.",
+  "years_experience": 5,
+  "skills": [
+    { "name": "Go", "level": "advanced", "years": 4 },
+    { "name": "PostgreSQL", "level": "intermediate", "years": 3 }
+  ]
+}
+
+@candId = {{register.response.body.id}}
+
+### 2. Same email (any case) -> 409
+POST {{cands}}/candidates
+Content-Type: application/json
+
+{ "email": "ADA@example.com", "full_name": "Someone Else" }
+
+### 3. Work experience (end_date null = current job)
+PUT {{cands}}/candidates/{{candId}}/experiences
+Content-Type: application/json
+
+{
+  "experiences": [
+    { "company": "Acme", "title": "Senior Go Developer", "start_date": "2022-03-01", "end_date": null },
+    { "company": "Initech", "title": "Backend Developer", "start_date": "2019-07-01", "end_date": "2022-02-28" }
+  ]
+}
+
+### 4. Education
+PUT {{cands}}/candidates/{{candId}}/educations
+Content-Type: application/json
+
+{
+  "educations": [
+    { "institution": "NUST", "degree": "BS", "field_of_study": "Computer Science", "start_year": 2015, "end_year": 2019 }
+  ]
+}
+
+### 5. Replace skills
+PUT {{cands}}/candidates/{{candId}}/skills
+Content-Type: application/json
+
+{ "skills": [ { "name": "Go", "level": "expert", "years": 5 }, { "name": "Kafka" } ] }
+
+### 6. Partial update (version from latest GET)
+GET {{cands}}/candidates/{{candId}}
+
+###
+PATCH {{cands}}/candidates/{{candId}}
+Content-Type: application/json
+
+{ "version": 4, "headline": "Senior Backend Engineer" }
+
+### 7. Upload resume (PDF or DOCX, max 5 MiB). Put a real cv.pdf next to this file.
+POST {{cands}}/candidates/{{candId}}/resume
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="cv.pdf"
+Content-Type: application/pdf
+
+< ./cv.pdf
+--boundary--
+
+### 8. Download latest resume
+GET {{cands}}/candidates/{{candId}}/resume
+
+### 9. Recruiter search: by skill, location, free text
+GET {{cands}}/candidates?skill=go&location=lahore&q=backend&limit=20

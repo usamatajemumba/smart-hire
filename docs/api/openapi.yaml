@@ -1,0 +1,468 @@
+openapi: 3.1.0
+info:
+  title: SmartHire API (Week 1)
+  version: 0.1.0
+  description: |
+    Job management (job-service, :8081) and candidate management (candidate-service, :8082).
+
+    Conventions:
+    - All endpoints are under `/api/v1`.
+    - Errors use one envelope: `{"error": {"code", "message", "details", "request_id"}}`.
+    - Lists use `limit` (default 20, max 100) and `offset`.
+    - Updates use optimistic locking: send the `version` you read; a stale version returns 409.
+    - `X-User-ID` header is the acting user until authentication is added (stored in the audit log).
+    - `X-Request-ID` is accepted or generated, and echoed back in every response.
+servers:
+  - url: http://localhost:8081/api/v1
+    description: job-service
+  - url: http://localhost:8082/api/v1
+    description: candidate-service
+
+tags:
+  - name: Jobs
+  - name: Candidates
+
+paths:
+  /jobs:
+    post:
+      tags: [Jobs]
+      summary: Create a draft job
+      parameters: [{ $ref: "#/components/parameters/Actor" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CreateJob" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [Jobs]
+      summary: List / search jobs
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/JobStatus" } }
+        - { name: recruiter_id, in: query, schema: { type: string, format: uuid } }
+        - { name: location, in: query, schema: { type: string }, description: exact match, case-insensitive }
+        - { name: q, in: query, schema: { type: string }, description: substring of title or description }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page of jobs
+          content: { application/json: { schema: { $ref: "#/components/schemas/JobList" } } }
+
+  /jobs/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [Jobs]
+      summary: Get a job with requirements and stages
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [Jobs]
+      summary: Partially update a job (draft or published only)
+      parameters: [{ $ref: "#/components/parameters/Actor" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/UpdateJob" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: Stale version, $ref: "#/components/responses/Error" }
+        "422": { description: Job not editable in its status, $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Jobs]
+      summary: Soft-delete a job (not allowed while published)
+      parameters: [{ $ref: "#/components/parameters/Actor" }]
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /jobs/{id}/requirements:
+    put:
+      tags: [Jobs]
+      summary: Replace all requirements
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/Actor" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requirements: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/RequirementInput" } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /jobs/{id}/stages:
+    put:
+      tags: [Jobs]
+      summary: Replace the hiring pipeline (positions must be 1..n)
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/Actor" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stages: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/StageInput" } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+
+  /jobs/{id}/publish:
+    post:
+      tags: [Jobs]
+      summary: draft -> published (validates the whole job first)
+      description: Returns 422 with `details.problems` listing everything that blocks publishing.
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/Actor" }]
+      responses:
+        "200": { description: Published, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "409": { description: Changed concurrently, $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /jobs/{id}/close:
+    post:
+      tags: [Jobs]
+      summary: published -> closed
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/Actor" }]
+      responses:
+        "200": { description: Closed, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+  /jobs/{id}/archive:
+    post:
+      tags: [Jobs]
+      summary: draft|closed -> archived
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/Actor" }]
+      responses:
+        "200": { description: Archived, content: { application/json: { schema: { $ref: "#/components/schemas/Job" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+  /jobs/{id}/audit:
+    get:
+      tags: [Jobs]
+      summary: Audit trail for a job, newest first
+      parameters: [{ $ref: "#/components/parameters/ID" }, { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Offset" }]
+      responses:
+        "200":
+          description: Page of audit entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ListMeta"
+                  - type: object
+                    properties: { items: { type: array, items: { $ref: "#/components/schemas/AuditLog" } } }
+
+  /candidates:
+    post:
+      tags: [Candidates]
+      summary: Register a candidate
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RegisterCandidate" } } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Candidate" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "409": { description: Email already registered, $ref: "#/components/responses/Error" }
+    get:
+      tags: [Candidates]
+      summary: List / search candidates
+      parameters:
+        - { name: skill, in: query, schema: { type: string }, description: has this skill (case-insensitive) }
+        - { name: location, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string }, description: substring of name, email or headline }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Page of candidates
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ListMeta"
+                  - type: object
+                    properties: { items: { type: array, items: { $ref: "#/components/schemas/Candidate" } } }
+
+  /candidates/{id}:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    get:
+      tags: [Candidates]
+      summary: Full candidate profile (skills, experience, education, latest resume)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Candidate" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [Candidates]
+      summary: Partially update profile fields
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version: { type: integer, minimum: 1 }
+                full_name: { type: string }
+                phone: { type: string, description: E.164 }
+                location: { type: string }
+                headline: { type: string }
+                summary: { type: string }
+                years_experience: { type: integer, minimum: 0, maximum: 60 }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Candidate" } } } }
+        "409": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [Candidates]
+      summary: Soft-delete a candidate
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /candidates/{id}/skills:
+    put:
+      tags: [Candidates]
+      summary: Replace skills
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { skills: { type: array, items: { $ref: "#/components/schemas/SkillInput" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Candidate" } } } }
+  /candidates/{id}/experiences:
+    put:
+      tags: [Candidates]
+      summary: Replace work experience
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                experiences:
+                  type: array
+                  items:
+                    type: object
+                    required: [company, title, start_date]
+                    properties:
+                      company: { type: string }
+                      title: { type: string }
+                      start_date: { type: string, format: date }
+                      end_date: { type: [string, "null"], format: date, description: null = current job }
+                      description: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Candidate" } } } }
+  /candidates/{id}/educations:
+    put:
+      tags: [Candidates]
+      summary: Replace education history
+      parameters: [{ $ref: "#/components/parameters/ID" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                educations:
+                  type: array
+                  items:
+                    type: object
+                    required: [institution, degree, start_year]
+                    properties:
+                      institution: { type: string }
+                      degree: { type: string }
+                      field_of_study: { type: string }
+                      start_year: { type: integer }
+                      end_year: { type: [integer, "null"] }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Candidate" } } } }
+  /candidates/{id}/resume:
+    parameters: [{ $ref: "#/components/parameters/ID" }]
+    post:
+      tags: [Candidates]
+      summary: Upload a resume (PDF/DOCX, max 5 MiB; type detected from file bytes)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties: { file: { type: string, format: binary } }
+      responses:
+        "201": { description: Stored, content: { application/json: { schema: { $ref: "#/components/schemas/Resume" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [Candidates]
+      summary: Download the latest resume
+      responses:
+        "200": { description: File bytes, content: { application/pdf: {}, application/vnd.openxmlformats-officedocument.wordprocessingml.document: {} } }
+        "404": { $ref: "#/components/responses/Error" }
+
+components:
+  parameters:
+    ID: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    Actor: { name: X-User-ID, in: header, schema: { type: string }, description: Acting user (pre-auth placeholder) }
+    Limit: { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+    Offset: { name: offset, in: query, schema: { type: integer, default: 0 } }
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: object
+                properties:
+                  code: { type: string, enum: [VALIDATION_ERROR, NOT_FOUND, CONFLICT, BUSINESS_RULE_FAILED, INTERNAL_ERROR] }
+                  message: { type: string }
+                  details: { type: object }
+                  request_id: { type: string }
+
+  schemas:
+    JobStatus: { type: string, enum: [draft, published, closed, archived] }
+    RequirementInput:
+      type: object
+      required: [type, value]
+      properties:
+        type: { type: string, enum: [skill, qualification, experience, other] }
+        value: { type: string, maxLength: 255 }
+        is_mandatory: { type: boolean, default: true }
+    StageInput:
+      type: object
+      required: [name, stage_type, position]
+      properties:
+        name: { type: string }
+        stage_type: { type: string, enum: [screening, assessment, interview, offer] }
+        position: { type: integer, minimum: 1 }
+    CreateJob:
+      type: object
+      required: [recruiter_id, title, employment_type, work_mode]
+      properties:
+        recruiter_id: { type: string, format: uuid }
+        title: { type: string, minLength: 3, maxLength: 200 }
+        description: { type: string }
+        department: { type: string }
+        location: { type: string }
+        employment_type: { type: string, enum: [full_time, part_time, contract, internship, temporary] }
+        work_mode: { type: string, enum: [onsite, remote, hybrid] }
+        experience_min: { type: integer, minimum: 0 }
+        experience_max: { type: integer, minimum: 0 }
+        salary_min: { type: integer, minimum: 0 }
+        salary_max: { type: integer, minimum: 0 }
+        currency: { type: string, minLength: 3, maxLength: 3, example: PKR }
+        requirements: { type: array, items: { $ref: "#/components/schemas/RequirementInput" } }
+        stages: { type: array, items: { $ref: "#/components/schemas/StageInput" } }
+    UpdateJob:
+      type: object
+      required: [version]
+      description: Any CreateJob scalar field except recruiter_id, plus the version you read.
+      properties:
+        version: { type: integer, minimum: 1 }
+        title: { type: string }
+        description: { type: string }
+        location: { type: string }
+    Job:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        recruiter_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        department: { type: string }
+        location: { type: string }
+        employment_type: { type: string }
+        work_mode: { type: string }
+        experience_min: { type: [integer, "null"] }
+        experience_max: { type: [integer, "null"] }
+        salary_min: { type: [integer, "null"] }
+        salary_max: { type: [integer, "null"] }
+        currency: { type: [string, "null"] }
+        status: { $ref: "#/components/schemas/JobStatus" }
+        version: { type: integer }
+        published_at: { type: [string, "null"], format: date-time }
+        closed_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        requirements: { type: array, items: { type: object } }
+        stages: { type: array, items: { type: object } }
+    JobList:
+      allOf:
+        - $ref: "#/components/schemas/ListMeta"
+        - type: object
+          properties: { items: { type: array, items: { $ref: "#/components/schemas/Job" } } }
+    ListMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+    AuditLog:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        entity_type: { type: string }
+        entity_id: { type: string, format: uuid }
+        action: { type: string, example: job.published }
+        actor_id: { type: string }
+        changes: { type: object }
+        request_id: { type: string }
+        created_at: { type: string, format: date-time }
+    SkillInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        level: { type: string, enum: [beginner, intermediate, advanced, expert], default: intermediate }
+        years: { type: integer, minimum: 0 }
+    RegisterCandidate:
+      type: object
+      required: [email, full_name]
+      properties:
+        email: { type: string, format: email }
+        full_name: { type: string, minLength: 2 }
+        phone: { type: string, description: E.164, example: "+923001234567" }
+        location: { type: string }
+        headline: { type: string }
+        summary: { type: string }
+        years_experience: { type: integer, minimum: 0, maximum: 60 }
+        skills: { type: array, items: { $ref: "#/components/schemas/SkillInput" } }
+    Resume:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        file_name: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer }
+        uploaded_at: { type: string, format: date-time }
+    Candidate:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        full_name: { type: string }
+        phone: { type: string }
+        location: { type: string }
+        headline: { type: string }
+        summary: { type: string }
+        years_experience: { type: integer }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        skills: { type: array, items: { type: object } }
+        experiences: { type: array, items: { type: object } }
+        educations: { type: array, items: { type: object } }
+        resume: { oneOf: [{ $ref: "#/components/schemas/Resume" }, { type: "null" }] }
