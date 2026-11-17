@@ -1,0 +1,81 @@
+# Local development environment for SmartHire (Week 1).
+# Start: `make up`   Stop: `make down`   Wipe data: `make reset`
+# Credentials below are local-only defaults; override them via a git-ignored .env file.
+
+name: smarthire
+
+x-service-env: &service-env
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_USER: ${POSTGRES_USER:-smarthire}
+  DB_PASSWORD: ${POSTGRES_PASSWORD:-smarthire}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+x-service-healthcheck: &service-healthcheck
+  # Distroless images have no shell/curl, so the binary probes itself.
+  test: ["CMD", "/app", "healthcheck"]
+  interval: 5s
+  timeout: 3s
+  retries: 10
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smarthire}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smarthire}
+      POSTGRES_DB: postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deployments/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      # Checks the last DB created by init.sql, so "healthy" means init finished.
+      test: ["CMD", "pg_isready", "-U", "smarthire", "-d", "smarthire_candidates"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  job-service:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        SERVICE: job-service
+    environment:
+      <<: *service-env
+      DB_NAME: smarthire_jobs
+      HTTP_ADDR: ":8081"
+    ports:
+      - "${JOB_SERVICE_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck: *service-healthcheck
+
+  candidate-service:
+    build:
+      context: .
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        SERVICE: candidate-service
+    environment:
+      <<: *service-env
+      DB_NAME: smarthire_candidates
+      HTTP_ADDR: ":8082"
+      RESUME_STORAGE_DIR: /data/resumes
+    ports:
+      - "${CANDIDATE_SERVICE_PORT:-8082}:8082"
+    volumes:
+      - resumes:/data/resumes
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck: *service-healthcheck
+
+volumes:
+  pgdata:
+  resumes:
