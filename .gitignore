@@ -1,0 +1,17 @@
+# binaries
+/bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# env / local data
+.env
+/data/
+/tmp/
+
+# editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
