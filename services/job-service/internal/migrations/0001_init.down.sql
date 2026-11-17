@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS hiring_stages;
+DROP TABLE IF EXISTS job_requirements;
+DROP TABLE IF EXISTS jobs;
